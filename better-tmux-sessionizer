@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+
+VERSION="1.0.0"
+
+CONFIG_FILE_NAME="better-tmux-sessionizer.conf"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/better-tmux-sessionizer"
+CONFIG_FILE="$CONFIG_DIR/$CONFIG_FILE_NAME"
+PANE_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/better-tmux-sessionizer"
+PANE_CACHE_FILE="$PANE_CACHE_DIR/panes.cache"
+
+LEGACY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-sessionizer"
+LEGACY_CONFIG_FILE="$LEGACY_CONFIG_DIR/tmux-sessionizer.conf"
+
+[[ -f "$LEGACY_CONFIG_FILE" ]] && source "$LEGACY_CONFIG_FILE"
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+[[ -f "$CONFIG_FILE_NAME" ]] && source "$CONFIG_FILE_NAME"
+
+BTS_WORKTREE_BASE="${BTS_WORKTREE_BASE:-$HOME/dev/worktrees}"
+BTS_BRANCH_KEY="${BTS_BRANCH_KEY:-ctrl-b}"
+
+if [[ -z "$TS_LOG_FILE" ]]; then
+    TS_LOG_FILE="$HOME/.local/share/better-tmux-sessionizer/better-tmux-sessionizer.logs"
+fi
+
+if [[ "$TS_LOG" == "file" ]]; then
+    mkdir -p "$(dirname "$TS_LOG_FILE")"
+fi
+
+log() {
+    if [[ -z "$TS_LOG" ]]; then
+        return
+    elif [[ "$TS_LOG" == "echo" ]]; then
+        echo "$*"
+    elif [[ "$TS_LOG" == "file" ]]; then
+        echo "$*" >> "$TS_LOG_FILE"
+    fi
+}
+
+session_idx=""
+session_cmd=""
+user_selected=""
+split_type=""
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+        echo "Usage: better-tmux-sessionizer [OPTIONS] [SEARCH_PATH]"
+        echo ""
+        echo "An enhanced tmux session manager with git worktree integration."
+        echo ""
+        echo "Options:"
+        echo "  -h, --help             Display this help message"
+        echo "  -v, --version          Display version"
+        echo "  -s, --session <idx>    Session command index"
+        echo "  --vsplit               Create vertical split for session command"
+        echo "  --hsplit               Create horizontal split for session command"
+        echo ""
+        echo "Interactive keys (in fzf):"
+        echo "  Enter                  Select directory / branch"
+        echo "  ${BTS_BRANCH_KEY}              Toggle git branch picker"
+        echo "  Escape                 Exit"
+        exit 0
+        ;;
+    -s | --session)
+        session_idx="$2"
+        if [[ -z "$session_idx" ]]; then
+            echo "Session index cannot be empty"
+            exit 1
+        fi
+
+        if [[ -z "$TS_SESSION_COMMANDS" ]]; then
+            echo "TS_SESSION_COMMANDS is not set. Must have a command set to run when switching to a session"
+            exit 1
+        fi
+
+        if [[ -z "$session_idx" || "$session_idx" -lt 0 || "$session_idx" -ge "${#TS_SESSION_COMMANDS[@]}" ]]; then
+            echo "Error: Invalid index. Please provide an index between 0 and $((${#TS_SESSION_COMMANDS[@]} - 1))."
+            exit 1
+        fi
+
+        session_cmd="${TS_SESSION_COMMANDS[$session_idx]}"
+        shift
+        ;;
+    --vsplit)
+        split_type="vsplit"
+        ;;
+    --hsplit)
+        split_type="hsplit"
+        ;;
+    -v | --version)
+        echo "better-tmux-sessionizer version $VERSION"
+        exit 0
+        ;;
+    *)
+        user_selected="$1"
+        ;;
+    esac
+    shift
+done
+
+log "better-tmux-sessionizer($VERSION): idx=$session_idx cmd=$session_cmd user_selected=$user_selected split_type=$split_type"
+
+if [[ -n "$split_type" && -z "$session_idx" ]]; then
+    echo "Error: --vsplit and --hsplit can only be used with -s/--session option"
+    exit 1
+fi
+
+sanity_check() {
+    if ! command -v tmux &>/dev/null; then
+        echo "tmux is not installed. Please install it first."
+        exit 1
+    fi
+
+    if ! command -v fzf &>/dev/null; then
+        echo "fzf is not installed. Please install it first."
+        exit 1
+    fi
+
+    if ! command -v git &>/dev/null; then
+        echo "git is not installed. Please install it first."
+        exit 1
+    fi
+}
+
+switch_to() {
+    if [[ -z "$TMUX" ]]; then
+        tmux attach-session -t "$1"
+    else
+        tmux switch-client -t "$1"
+    fi
+}
+
+has_session() {
+    tmux list-sessions 2>/dev/null | grep -q "^$1:"
+}
+
+hydrate() {
+    if [[ -n "$session_cmd" ]]; then
+        return
+    elif [[ -f "$2/.tmux-sessionizer" ]]; then
+        tmux send-keys -t "$1" "source $2/.tmux-sessionizer" c-M
+    elif [[ -f "$HOME/.tmux-sessionizer" ]]; then
+        tmux send-keys -t "$1" "source $HOME/.tmux-sessionizer" c-M
+    fi
+}
+
+is_tmux_running() {
+    local tmux_running
+    tmux_running=$(pgrep tmux)
+
+    if [[ -z "$TMUX" ]] && [[ -z "$tmux_running" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+init_pane_cache() {
+    mkdir -p "$PANE_CACHE_DIR"
+    touch "$PANE_CACHE_FILE"
+}
+
+get_pane_id() {
+    local idx="$1"
+    local split="$2"
+    init_pane_cache
+    grep "^${idx}:${split}:" "$PANE_CACHE_FILE" | cut -d: -f3
+}
+
+set_pane_id() {
+    local idx="$1"
+    local split="$2"
+    local pane_id="$3"
+    init_pane_cache
+    grep -v "^${idx}:${split}:" "$PANE_CACHE_FILE" > "${PANE_CACHE_FILE}.tmp" 2>/dev/null || true
+    mv "${PANE_CACHE_FILE}.tmp" "$PANE_CACHE_FILE"
+    echo "${idx}:${split}:${pane_id}" >> "$PANE_CACHE_FILE"
+}
+
+cleanup_dead_panes() {
+    init_pane_cache
+    local temp_file="${PANE_CACHE_FILE}.tmp"
+    while IFS=: read -r idx split pane_id; do
+        if tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -q "^${pane_id}$"; then
+            echo "${idx}:${split}:${pane_id}" >> "$temp_file"
+        fi
+    done < "$PANE_CACHE_FILE"
+    mv "$temp_file" "$PANE_CACHE_FILE" 2>/dev/null || touch "$PANE_CACHE_FILE"
+}
+
+find_dirs() {
+    if [[ -n "$TMUX" ]]; then
+        local current_session
+        current_session=$(tmux display-message -p '#S')
+        tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null | grep -vFx "[TMUX] $current_session"
+    else
+        tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null
+    fi
+
+    [[ -n "$TS_SEARCH_PATHS" ]] || TS_SEARCH_PATHS=(~/ ~/personal ~/personal/dev/env/.config)
+
+    if [[ ${#TS_EXTRA_SEARCH_PATHS[@]} -gt 0 ]]; then
+        TS_SEARCH_PATHS+=("${TS_EXTRA_SEARCH_PATHS[@]}")
+    fi
+
+    for entry in "${TS_SEARCH_PATHS[@]}"; do
+        local path depth
+        if [[ "$entry" =~ ^([^:]+):([0-9]+)$ ]]; then
+            path="${BASH_REMATCH[1]}"
+            depth="${BASH_REMATCH[2]}"
+        else
+            path="$entry"
+            depth=""
+        fi
+
+        if [[ -d "$path" ]]; then
+            if [[ "${depth:-${TS_MAX_DEPTH:-1}}" -eq 0 ]]; then
+                printf '%s\n' "$path"
+            else
+                find "$path" -mindepth 1 -maxdepth "${depth:-${TS_MAX_DEPTH:-1}}" -path '*/.git' -prune -o -type d -print
+            fi
+        fi
+    done
+}
+
+handle_session_cmd() {
+    if ! is_tmux_running; then
+        echo "Error: tmux is not running. Please start tmux first before using session commands."
+        exit 1
+    fi
+
+    local current_session
+    current_session=$(tmux display-message -p '#S')
+
+    if [[ -n "$split_type" ]]; then
+        handle_split_session_cmd "$current_session"
+    else
+        handle_window_session_cmd "$current_session"
+    fi
+    exit 0
+}
+
+handle_window_session_cmd() {
+    local current_session="$1"
+    local start_index=$((69 + session_idx))
+    local target="$current_session:$start_index"
+
+    if tmux has-session -t="$target" 2>/dev/null; then
+        switch_to "$target"
+    else
+        tmux neww -dt "$target" "$session_cmd"
+        hydrate "$target" "$selected"
+        tmux select-window -t "$target"
+    fi
+}
+
+handle_split_session_cmd() {
+    local current_session="$1"
+    cleanup_dead_panes
+
+    local existing_pane_id
+    existing_pane_id=$(get_pane_id "$session_idx" "$split_type")
+
+    if [[ -n "$existing_pane_id" ]] && tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -q "^${existing_pane_id}$"; then
+        tmux select-pane -t "$existing_pane_id"
+        if [[ -z "$TMUX" ]]; then
+            tmux attach-session -t "$current_session"
+        else
+            tmux switch-client -t "$current_session"
+        fi
+    else
+        local split_flag=""
+        if [[ "$split_type" == "vsplit" ]]; then
+            split_flag="-h"
+        else
+            split_flag="-v"
+        fi
+
+        local new_pane_id
+        new_pane_id=$(tmux split-window $split_flag -c "$(pwd)" -P -F "#{pane_id}" "$session_cmd")
+
+        if [[ -n "$new_pane_id" ]]; then
+            set_pane_id "$session_idx" "$split_type" "$new_pane_id"
+        fi
+    fi
+}
+
+get_branches() {
+    local repo_path="$1"
+    {
+        git -C "$repo_path" branch --format='%(refname:short)' 2>/dev/null
+        git -C "$repo_path" branch -r --format='%(refname:short)' 2>/dev/null \
+            | sed 's|^[^/]*/||' \
+            | grep -v '^HEAD$'
+    } | sort -u
+}
+
+get_worktree_path() {
+    local project_name="$1"
+    local branch_name="$2"
+    local sanitized
+    sanitized=$(echo "$branch_name" | tr '/' '-')
+    echo "${BTS_WORKTREE_BASE}/${project_name}/${sanitized}"
+}
+
+create_or_get_worktree() {
+    local repo_path="$1"
+    local branch="$2"
+    local project_name
+    project_name=$(basename "$repo_path")
+    local worktree_path
+    worktree_path=$(get_worktree_path "$project_name" "$branch")
+
+    if [[ -d "$worktree_path" ]]; then
+        if git -C "$worktree_path" rev-parse --git-dir &>/dev/null; then
+            echo "$worktree_path"
+            return 0
+        fi
+        rm -rf "$worktree_path"
+        git -C "$repo_path" worktree prune &>/dev/null
+    fi
+
+    mkdir -p "$(dirname "$worktree_path")"
+
+    local git_output
+    if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+        git_output=$(git -C "$repo_path" worktree add "$worktree_path" "$branch" 2>&1)
+    else
+        git_output=$(git -C "$repo_path" worktree add -b "$branch" "$worktree_path" "origin/$branch" 2>&1)
+    fi
+
+    if [[ $? -ne 0 ]]; then
+        log "worktree creation failed: $git_output"
+        return 1
+    fi
+
+    log "worktree created: $git_output"
+    echo "$worktree_path"
+}
+
+handle_branch_selection() {
+    local project_path="$1"
+    local branch="$2"
+    local project_name
+    project_name=$(basename "$project_path")
+    local session_name
+    session_name=$(echo "$project_name" | tr . _)
+    local current_branch
+    current_branch=$(git -C "$project_path" branch --show-current 2>/dev/null)
+
+    local target_dir
+
+    if [[ "$branch" == "$current_branch" ]]; then
+        target_dir="$project_path"
+    else
+        target_dir=$(create_or_get_worktree "$project_path" "$branch")
+        if [[ $? -ne 0 || -z "$target_dir" ]]; then
+            echo "Error: could not create worktree for branch '$branch'" >&2
+            exit 1
+        fi
+    fi
+
+    if ! is_tmux_running; then
+        tmux new-session -ds "$session_name" -c "$project_path"
+        hydrate "$session_name" "$project_path"
+    elif ! has_session "$session_name"; then
+        tmux new-session -ds "$session_name" -c "$project_path"
+        hydrate "$session_name" "$project_path"
+    fi
+
+    local window_name
+    window_name=$(echo "$branch" | tr '/' '-')
+    tmux new-window -t "$session_name" -n "$window_name" -c "$target_dir"
+
+    switch_to "$session_name"
+}
+
+run_interactive() {
+    local mode="directory"
+    local project_path=""
+    local branch_key="$BTS_BRANCH_KEY"
+
+    while true; do
+        if [[ "$mode" == "directory" ]]; then
+            local result
+            result=$(find_dirs | fzf \
+                --header "enter: select | ${branch_key}: git branches" \
+                --expect="$branch_key") || exit 0
+
+            local key selection
+            key=$(head -1 <<< "$result")
+            selection=$(sed -n '2p' <<< "$result")
+
+            [[ -z "$selection" ]] && exit 0
+
+            if [[ "$key" == "$branch_key" ]]; then
+                if [[ "$selection" =~ ^\[TMUX\]\ (.+)$ ]]; then
+                    continue
+                fi
+
+                if git -C "$selection" rev-parse --git-dir &>/dev/null; then
+                    mode="branch"
+                    project_path="$selection"
+                    continue
+                fi
+
+                continue
+            fi
+
+            selected="$selection"
+            return
+
+        elif [[ "$mode" == "branch" ]]; then
+            local project_name current_branch
+            project_name=$(basename "$project_path")
+            current_branch=$(git -C "$project_path" branch --show-current 2>/dev/null)
+
+            local result
+            result=$(get_branches "$project_path" | fzf \
+                --ansi \
+                --header "branches: ${project_name} (on: ${current_branch}) | ${branch_key}: back" \
+                --expect="$branch_key" \
+                --preview "git -C '${project_path}' log --oneline --graph --color=always -20 {} 2>/dev/null" \
+                --preview-window=right:50%) || exit 0
+
+            local key selection
+            key=$(head -1 <<< "$result")
+            selection=$(sed -n '2p' <<< "$result")
+
+            if [[ "$key" == "$branch_key" ]]; then
+                mode="directory"
+                continue
+            fi
+
+            [[ -z "$selection" ]] && exit 0
+
+            handle_branch_selection "$project_path" "$selection"
+            exit 0
+        fi
+    done
+}
+
+sanity_check
+
+if [[ -n "$session_cmd" ]]; then
+    handle_session_cmd
+elif [[ -n "$user_selected" ]]; then
+    selected="$user_selected"
+else
+    run_interactive
+fi
+
+if [[ -z "$selected" ]]; then
+    exit 0
+fi
+
+if [[ "$selected" =~ ^\[TMUX\]\ (.+)$ ]]; then
+    selected="${BASH_REMATCH[1]}"
+fi
+
+selected_name=$(basename "$selected" | tr . _)
+
+if ! is_tmux_running; then
+    tmux new-session -ds "$selected_name" -c "$selected"
+    hydrate "$selected_name" "$selected"
+fi
+
+if ! has_session "$selected_name"; then
+    tmux new-session -ds "$selected_name" -c "$selected"
+    hydrate "$selected_name" "$selected"
+fi
+
+switch_to "$selected_name"
