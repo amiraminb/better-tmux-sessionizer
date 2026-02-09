@@ -369,7 +369,12 @@ handle_branch_selection() {
 
     local window_name
     window_name=$(echo "$branch" | tr '/' '-')
-    tmux new-window -t "$session_name" -n "$window_name" -c "$target_dir"
+
+    if tmux list-windows -t "$session_name" -F "#{window_name}" 2>/dev/null | grep -qx "$window_name"; then
+        tmux select-window -t "$session_name:$window_name"
+    else
+        tmux new-window -t "$session_name" -n "$window_name" -c "$target_dir"
+    fi
 
     switch_to "$session_name"
 }
@@ -394,7 +399,8 @@ run_interactive() {
 
             if [[ "$key" == "$branch_key" ]]; then
                 if [[ "$selection" =~ ^\[TMUX\]\ (.+)$ ]]; then
-                    continue
+                    selection=$(tmux display-message -t "${BASH_REMATCH[1]}:1" -p '#{pane_current_path}' 2>/dev/null)
+                    [[ -z "$selection" ]] && continue
                 fi
 
                 if git -C "$selection" rev-parse --git-dir &>/dev/null; then
