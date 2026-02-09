@@ -15,12 +15,12 @@ better-tmux-sessionizer [OPTIONS] [SEARCH_PATH]
 | Key | Action |
 |-----|--------|
 | `Enter` | Select directory / branch |
-| `Ctrl-B` | Toggle git branch picker |
+| `Ctrl-W` | Toggle git branch picker |
 | `Escape` | Exit |
 
 ### Branch picker
 
-Press `Ctrl-B` on a git project to switch to its branch list. Select a branch to open it in a new tmux window via `git worktree`. Press `Ctrl-B` again to go back.
+Press `Ctrl-W` on a git project to switch to its branch list. Select a branch to open it in a new tmux window via `git worktree`. Press `Ctrl-W` again to go back.
 
 Worktrees are stored at `~/dev/worktrees/<project>/<branch>`.
 
@@ -31,7 +31,7 @@ Create `~/.config/better-tmux-sessionizer/better-tmux-sessionizer.conf`:
 ```bash
 TS_SEARCH_PATHS=(~/dev:2 ~/wiki:0 ~/.config:0)
 BTS_WORKTREE_BASE=~/dev/worktrees
-BTS_BRANCH_KEY=ctrl-b
+BTS_BRANCH_KEY=ctrl-w
 ```
 
 If migrating from tmux-sessionizer, existing `~/.config/tmux-sessionizer/tmux-sessionizer.conf` is also picked up automatically.

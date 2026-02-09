@@ -16,7 +16,7 @@ LEGACY_CONFIG_FILE="$LEGACY_CONFIG_DIR/tmux-sessionizer.conf"
 [[ -f "$CONFIG_FILE_NAME" ]] && source "$CONFIG_FILE_NAME"
 
 BTS_WORKTREE_BASE="${BTS_WORKTREE_BASE:-$HOME/dev/worktrees}"
-BTS_BRANCH_KEY="${BTS_BRANCH_KEY:-ctrl-b}"
+BTS_BRANCH_KEY="${BTS_BRANCH_KEY:-ctrl-w}"
 
 if [[ -z "$TS_LOG_FILE" ]]; then
     TS_LOG_FILE="$HOME/.local/share/better-tmux-sessionizer/better-tmux-sessionizer.logs"
