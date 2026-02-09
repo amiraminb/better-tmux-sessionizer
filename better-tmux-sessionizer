@@ -419,13 +419,28 @@ run_interactive() {
             local project_name current_branch
             project_name=$(basename "$project_path")
             current_branch=$(git -C "$project_path" branch --show-current 2>/dev/null)
+            local session_name
+            session_name=$(echo "$project_name" | tr . _)
+
+            local open_windows=""
+            if has_session "$session_name"; then
+                open_windows=$(tmux list-windows -t "$session_name" -F "#{window_name}" 2>/dev/null)
+            fi
 
             local result
-            result=$(get_branches "$project_path" | fzf \
+            result=$(get_branches "$project_path" | while read -r _branch; do
+                local _win_name
+                _win_name=$(echo "$_branch" | tr '/' '-')
+                if [[ -n "$open_windows" ]] && echo "$open_windows" | grep -qxF "$_win_name"; then
+                    echo "[TMUX] $_branch"
+                else
+                    echo "$_branch"
+                fi
+            done | fzf \
                 --ansi \
                 --header "branches: ${project_name} (on: ${current_branch}) | ${branch_key}: back" \
                 --expect="$branch_key" \
-                --preview "git -C '${project_path}' log --oneline --graph --color=always -20 {} 2>/dev/null" \
+                --preview "branch=\$(echo {} | sed 's/^\[TMUX\] //'); git -C '${project_path}' log --oneline --graph --color=always -20 \"\$branch\" 2>/dev/null" \
                 --preview-window=right:50%) || exit 0
 
             local key selection
@@ -438,6 +453,10 @@ run_interactive() {
             fi
 
             [[ -z "$selection" ]] && exit 0
+
+            if [[ "$selection" =~ ^\[TMUX\]\ (.+)$ ]]; then
+                selection="${BASH_REMATCH[1]}"
+            fi
 
             handle_branch_selection "$project_path" "$selection"
             exit 0
