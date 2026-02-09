@@ -216,7 +216,7 @@ find_dirs() {
             if [[ "${depth:-${TS_MAX_DEPTH:-1}}" -eq 0 ]]; then
                 printf '%s\n' "$path"
             else
-                find "$path" -mindepth 1 -maxdepth "${depth:-${TS_MAX_DEPTH:-1}}" -path '*/.git' -prune -o -type d -print
+                find "$path" -mindepth 1 -maxdepth "${depth:-${TS_MAX_DEPTH:-1}}" -path '*/.git' -prune -o -path "$BTS_WORKTREE_BASE" -prune -o -type d -print
             fi
         fi
     done
