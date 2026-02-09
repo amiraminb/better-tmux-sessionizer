@@ -188,13 +188,7 @@ cleanup_dead_panes() {
 }
 
 find_dirs() {
-    if [[ -n "$TMUX" ]]; then
-        local current_session
-        current_session=$(tmux display-message -p '#S')
-        tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null | grep -vFx "[TMUX] $current_session"
-    else
-        tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null
-    fi
+    tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null
 
     [[ -n "$TS_SEARCH_PATHS" ]] || TS_SEARCH_PATHS=(~/ ~/personal ~/personal/dev/env/.config)
 
