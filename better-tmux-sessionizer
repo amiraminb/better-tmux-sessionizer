@@ -393,7 +393,17 @@ run_interactive() {
 
             if [[ "$key" == "$branch_key" ]]; then
                 if [[ "$selection" =~ ^\[TMUX\]\ (.+)$ ]]; then
-                    selection=$(tmux display-message -t "${BASH_REMATCH[1]}:1" -p '#{pane_current_path}' 2>/dev/null)
+                    local _session_name="${BASH_REMATCH[1]}"
+                    selection=""
+                    while read -r dir; do
+                        [[ "$dir" =~ ^\[TMUX\] ]] && continue
+                        local _dir_name
+                        _dir_name=$(basename "$dir" | tr . _)
+                        if [[ "$_dir_name" == "$_session_name" ]]; then
+                            selection="$dir"
+                            break
+                        fi
+                    done < <(find_dirs)
                     [[ -z "$selection" ]] && continue
                 fi
 
