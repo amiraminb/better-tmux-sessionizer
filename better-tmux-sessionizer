@@ -40,6 +40,7 @@ session_idx=""
 session_cmd=""
 user_selected=""
 split_type=""
+branch_mode=""
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -54,6 +55,8 @@ while [[ "$#" -gt 0 ]]; do
         echo "  -s, --session <idx>    Session command index"
         echo "  --vsplit               Create vertical split for session command"
         echo "  --hsplit               Create horizontal split for session command"
+        echo ""
+        echo "  -b, --branch           Open branch picker for current project"
         echo ""
         echo "Interactive keys (in fzf):"
         echo "  Enter                  Select directory / branch"
@@ -87,6 +90,9 @@ while [[ "$#" -gt 0 ]]; do
     --hsplit)
         split_type="hsplit"
         ;;
+    -b | --branch)
+        branch_mode="1"
+        ;;
     -v | --version)
         echo "better-tmux-sessionizer version $VERSION"
         exit 0
@@ -98,7 +104,7 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-log "better-tmux-sessionizer($VERSION): idx=$session_idx cmd=$session_cmd user_selected=$user_selected split_type=$split_type"
+log "better-tmux-sessionizer($VERSION): idx=$session_idx cmd=$session_cmd user_selected=$user_selected split_type=$split_type branch_mode=$branch_mode"
 
 if [[ -n "$split_type" && -z "$session_idx" ]]; then
     echo "Error: --vsplit and --hsplit can only be used with -s/--session option"
@@ -374,8 +380,8 @@ handle_branch_selection() {
 }
 
 run_interactive() {
-    local mode="directory"
-    local project_path=""
+    local mode="${1:-directory}"
+    local project_path="${2:-}"
     local branch_key="$BTS_BRANCH_KEY"
 
     while true; do
@@ -472,6 +478,21 @@ sanity_check
 
 if [[ -n "$session_cmd" ]]; then
     handle_session_cmd
+elif [[ -n "$branch_mode" ]]; then
+    pane_path=""
+    if [[ -n "$TMUX" ]]; then
+        pane_path=$(tmux display-message -p '#{pane_current_path}')
+    else
+        pane_path=$(pwd)
+    fi
+
+    git_root=$(git -C "$pane_path" rev-parse --show-toplevel 2>/dev/null)
+    if [[ -z "$git_root" ]]; then
+        echo "Error: not inside a git repository"
+        exit 1
+    fi
+
+    run_interactive "branch" "$git_root"
 elif [[ -n "$user_selected" ]]; then
     selected="$user_selected"
 else
